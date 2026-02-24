@@ -19,7 +19,8 @@ const merchantRouter = require('./routes/merchant');
 const authRouter = require('./routes/auth');
 
 const app = express();
-const port = 3000;
+// 云托管/容器会注入 PORT，本地默认 3000
+const port = process.env.PORT || 3000;
 
 // 2. 基础配置中间件
 app.use(cors()); 

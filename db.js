@@ -1,14 +1,13 @@
-// db.js - 数据库连接模块
+// db.js - 数据库连接模块（支持环境变量，便于云托管/容器部署）
 const mysql = require('mysql2');
 
-// 1. 创建连接池 (比单独连接更稳定，适合小程序高并发)
 const pool = mysql.createPool({
-    host: 'localhost',      // 数据库地址 (本地)
-    user: 'root',           // 数据库用户名 (请确认您的账号)
-    password: 'lbc200425@',       // 数据库密码 (请确认您的密码)
-    database: 'puwai_db',   // 刚才在 Navicat 里建的数据库名
+    host: process.env.MYSQL_HOST || 'localhost',
+    user: process.env.MYSQL_USER || 'root',
+    password: process.env.MYSQL_PASSWORD || '',
+    database: process.env.MYSQL_DATABASE || 'puwai_db',
     waitForConnections: true,
-    connectionLimit: 10,    // 最多同时允许10个连接
+    connectionLimit: 10,
     queueLimit: 0
 });
 
