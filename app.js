@@ -48,6 +48,12 @@ app.use('/api/merchant', merchantRouter);
 
 app.use('/api/auth', authRouter);
 
+// 可选：把每次请求打到运行日志，便于排查
+app.use((req, res, next) => {
+    console.log(req.method, req.url);
+    next();
+  });
+
 // 5. 基础根路径测试
 app.get('/api/test', (req, res) => {
     res.json({
