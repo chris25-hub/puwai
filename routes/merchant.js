@@ -8,7 +8,7 @@ const { generateOrderNo } = require('../utils/tools'); // 1. 引入工具函数
 
 
 const openai = new OpenAI({
-    apiKey: 'sk-41ea61f5f0c64c9fa277dda6f85c38bd',
+    apiKey: (process.env.DEEPSEEK_API_KEY || 'sk-41ea61f5f0c64c9fa277dda6f85c38bd').trim(),
     baseURL: 'https://api.deepseek.com'
 });
 

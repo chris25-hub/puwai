@@ -19,6 +19,30 @@ router.get('/partner-info', async (req, res) => {
     }
 });
 
+// 用户端对话列表：当前用户作为 user_id 的 main_order / unlock_order 会话，含对方商家信息、最后一条消息、未读数（不修改原有接口，新增）
+router.get('/user-chat-list', async (req, res) => {
+        const db = require('../db');
+    const { user_uid } = req.query;
+    if (!user_uid) return res.status(400).json({ code: 400, error: '缺少 user_uid' });
+    try {
+        const [rows] = await db.query(`
+            SELECT t.session_id, t.merchant_id AS to_user,
+                (SELECT merchant_name FROM merchant WHERE uid = t.merchant_id LIMIT 1) AS to_user_name,
+                (SELECT content FROM messages WHERE session_id = t.session_id ORDER BY create_time DESC LIMIT 1) AS last_msg,
+                (SELECT COUNT(*) FROM messages WHERE session_id = t.session_id AND receiver_id = ? AND is_read = 0) AS unread
+            FROM (
+                SELECT CONCAT(demand_id, '_', merchant_id) AS session_id, merchant_id FROM main_order WHERE user_id = ?
+                UNION
+                SELECT CONCAT(demand_id, '_', merchant_id) AS session_id, merchant_id FROM unlock_order WHERE user_id = ?
+            ) AS t`,
+            [user_uid, user_uid, user_uid]
+        );
+        res.json({ code: 200, data: rows || [] });
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
 // 获取聊天记录：与商家端统一使用 messages 表（按 session_id）；无 session_id 时兼容旧接口 chat_messages
 router.get('/history', async (req, res) => {
     const { session_id, merchant_id, user_id } = req.query;

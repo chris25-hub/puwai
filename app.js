@@ -17,6 +17,9 @@ const adminRouter = require('./routes/admin');
 const merchantRouter = require('./routes/merchant');
 
 const authRouter = require('./routes/auth');
+const agentRouter = require('./routes/agent');
+const agentChatRouter = require('./routes/agentChat');
+const quoteRouter = require('./routes/quote');
 
 const app = express();
 // 云托管/容器会注入 PORT，本地默认 3000
@@ -47,6 +50,9 @@ app.use('/api/admin', adminRouter);
 app.use('/api/merchant', merchantRouter);
 
 app.use('/api/auth', authRouter);
+app.use('/api/agent', agentRouter);
+app.use('/api/agent-chat', agentChatRouter);
+app.use('/api/quote', quoteRouter);
 
 // 可选：把每次请求打到运行日志，便于排查
 app.use((req, res, next) => {
@@ -70,4 +76,6 @@ app.listen(port, () => {
     console.log(`- 订单业务模块已加载: /api/order`);
     console.log(`- 问卷业务模块已加载: /api/survey`);
     console.log(`- 需求/商家匹配模块已加载: /api/demand`);
+    console.log(`- 智能体对话持久化: /api/agent-chat （有请求时会出现 [agent-chat] 日志）`);
+    console.log(`- 多商家报价模块已加载: /api/quote`);
 });

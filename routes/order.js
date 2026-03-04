@@ -83,6 +83,68 @@ router.post('/create-main', async (req, res) => {
     }
 });
 
+// 2.1 用户在多家报价中选择其一，基于 quote 生成主订单
+router.post('/create-from-quote', async (req, res) => {
+    const { quote_id } = req.body || {};
+    if (!quote_id) return res.status(400).json({ code: 400, error: '缺少 quote_id' });
+
+    try {
+        await db.query('START TRANSACTION');
+
+        // 1. 读取报价与需求信息
+        const [quoteRows] = await db.query(
+            `SELECT q.*, d.user_id as demand_user_id 
+             FROM demand_quote q
+             LEFT JOIN demand d ON q.demand_id = d.id
+             WHERE q.id = ? FOR UPDATE`,
+            [quote_id]
+        );
+        if (!quoteRows || quoteRows.length === 0) {
+            await db.query('ROLLBACK');
+            return res.status(404).json({ code: 404, error: '报价不存在' });
+        }
+        const quote = quoteRows[0];
+        if (Number(quote.status) === 1) {
+            await db.query('ROLLBACK');
+            return res.status(400).json({ code: 400, error: '该报价已被其他选择' });
+        }
+
+        const rawUserId = quote.user_id || quote.demand_user_id;
+        const userUid = rawUserId
+            ? (String(rawUserId).startsWith('cus-') ? String(rawUserId) : 'cus-' + String(rawUserId))
+            : 'cus-1';
+        const merchantUid = quote.merchant_id;
+        const demandId = quote.demand_id;
+        const amount = quote.amount;
+
+        if (!userUid || !merchantUid || !demandId || !amount) {
+            await db.query('ROLLBACK');
+            return res.status(400).json({ code: 400, error: '报价信息不完整，无法创建订单' });
+        }
+
+        // 2. 为该需求与商家创建主订单
+        const orderNo = await generateOrderNo('MAIN', 'main_order');
+        const sql = `
+            INSERT INTO main_order (order_no, user_id, merchant_id, demand_id, total_amount, paid_amount, status, current_step, create_time)
+            VALUES (?, ?, ?, ?, ?, 0, 1, 1, NOW())
+        `;
+        const [result] = await db.query(sql, [orderNo, userUid, merchantUid, demandId, amount]);
+
+        // 3. 更新报价状态：选中的标记为 1，其它同需求的报价标记为 2（已拒绝）
+        await db.query('UPDATE demand_quote SET status = 1 WHERE id = ?', [quote_id]);
+        await db.query('UPDATE demand_quote SET status = 2 WHERE demand_id = ? AND id <> ?', [demandId, quote_id]);
+
+        // 4. 将需求状态更新为“已选中方案”（这里约定 2 为已选中待支付，可按需要调整）
+        await db.query('UPDATE demand SET status = 2 WHERE id = ?', [demandId]);
+
+        await db.query('COMMIT');
+        res.json({ code: 200, order_id: result.insertId, order_no: orderNo });
+    } catch (err) {
+        await db.query('ROLLBACK');
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
 // 3. 获取我的订单列表：含正式订单(main_order)与解锁咨询(unlock_order)，便于进入对话或查看进度
 router.get('/my-list', async (req, res) => {
     const { user_id } = req.query;
