@@ -18,11 +18,15 @@ router.post('/merchant', async (req, res) => {
 
     try {
         // 1. 校验需求是否存在、仍可报价
-        const [demandRows] = await db.query('SELECT id, user_id, status FROM demand WHERE id = ?', [demand_id]);
+        const [demandRows] = await db.query('SELECT id, user_id, status, demand_no FROM demand WHERE id = ?', [demand_id]);
         if (!demandRows || demandRows.length === 0) {
             return res.status(404).json({ code: 404, error: '需求不存在' });
         }
         const demand = demandRows[0];
+        const demandNo = demand.demand_no || null;
+        if (!demandNo) {
+            return res.status(400).json({ code: 400, error: '该需求缺少商单编号，请先执行 demand-add-demand-no.sql 并回填' });
+        }
         // 这里暂时只限制已经成单/关闭的需求不再接收报价；status 约定后续可细化
         if (demand.status != null && Number(demand.status) >= 3) {
             return res.status(400).json({ code: 400, error: '该需求已关闭或已成单，无法继续报价' });
@@ -40,26 +44,26 @@ router.post('/merchant', async (req, res) => {
             validUntil = new Date(Date.now() + Number(valid_minutes) * 60 * 1000);
         }
 
-        // 2. 同一商家对同一需求只保留一条最新报价：存在则更新，不存在则插入
+        // 2. 同一商家对同一需求只保留一条最新报价：按 demand_no + merchant_id 查
         const [existRows] = await db.query(
-            'SELECT id FROM demand_quote WHERE demand_id = ? AND merchant_id = ?',
-            [demand_id, merchant_id]
+            'SELECT id FROM demand_quote WHERE demand_no = ? AND merchant_id = ?',
+            [demandNo, merchant_id]
         );
 
         if (existRows && existRows.length > 0) {
             const quoteId = existRows[0].id;
             await db.query(
                 `UPDATE demand_quote 
-                 SET amount = ?, summary = ?, details = ?, is_self_operated = ?, status = 0, valid_until = ? 
+                 SET amount = ?, summary = ?, details = ?, is_self_operated = ?, status = 0, valid_until = ?, demand_no = ? 
                  WHERE id = ?`,
-                [cents, summary || null, details || null, isSelf, validUntil, quoteId]
+                [cents, summary || null, details || null, isSelf, validUntil, demandNo, quoteId]
             );
         } else {
             await db.query(
                 `INSERT INTO demand_quote 
-                 (demand_id, user_id, merchant_id, is_self_operated, amount, currency, summary, details, status, valid_until) 
+                 (demand_no, user_id, merchant_id, is_self_operated, amount, currency, summary, details, status, valid_until) 
                  VALUES (?, ?, ?, ?, ?, 'CNY', ?, ?, 0, ?)`,
-                [demand_id, quoteUserId, merchant_id, isSelf, cents, summary || null, details || null, validUntil]
+                [demandNo, quoteUserId, merchant_id, isSelf, cents, summary || null, details || null, validUntil]
             );
         }
 
@@ -70,16 +74,21 @@ router.post('/merchant', async (req, res) => {
     }
 });
 
-// 按需求查看所有报价（供 AI 分析 / 前端展示）
+// 按需求查看所有报价（供 AI 分析 / 前端展示）；入参 demand_id 对应 demand.id，内部按 demand_no 查 demand_quote
 router.get('/by-demand', async (req, res) => {
     const { demand_id } = req.query;
     if (!demand_id) return res.status(400).json({ code: 400, error: '缺少 demand_id' });
 
     try {
+        const [dRows] = await db.query('SELECT demand_no FROM demand WHERE id = ?', [demand_id]);
+        if (!dRows || !dRows[0] || !dRows[0].demand_no) {
+            return res.json({ code: 200, data: [] });
+        }
+        const demandNo = dRows[0].demand_no;
         const [rows] = await db.query(
             `SELECT 
                 q.id,
-                q.demand_id,
+                q.demand_no,
                 q.user_id,
                 q.merchant_id,
                 q.is_self_operated,
@@ -98,9 +107,9 @@ router.get('/by-demand', async (req, res) => {
                 m.response_rate
              FROM demand_quote q
              LEFT JOIN merchant m ON q.merchant_id = m.uid
-             WHERE q.demand_id = ?
+             WHERE q.demand_no = ?
              ORDER BY q.is_self_operated DESC, q.amount ASC, q.create_time ASC`,
-            [demand_id]
+            [demandNo]
         );
 
         res.json({ code: 200, data: rows || [] });
@@ -123,7 +132,12 @@ router.get('/ai-summary', async (req, res) => {
         }
         const demand = demandRows[0];
 
-        // 2. 取所有报价 + 商家信息
+        // 2. 取所有报价 + 商家信息（按 demand_no 查 demand_quote）
+        const [dnRows] = await db.query('SELECT demand_no FROM demand WHERE id = ?', [demand_id]);
+        const demandNoForQuotes = (dnRows && dnRows[0] && dnRows[0].demand_no) ? dnRows[0].demand_no : null;
+        if (!demandNoForQuotes) {
+            return res.status(404).json({ code: 404, error: '需求不存在' });
+        }
         const [quoteRows] = await db.query(
             `SELECT 
                 q.id,
@@ -138,9 +152,9 @@ router.get('/ai-summary', async (req, res) => {
                 m.response_rate
              FROM demand_quote q
              LEFT JOIN merchant m ON q.merchant_id = m.uid
-             WHERE q.demand_id = ?
+             WHERE q.demand_no = ?
              ORDER BY q.is_self_operated DESC, q.amount ASC, q.create_time ASC`,
-            [demand_id]
+            [demandNoForQuotes]
         );
 
         if (!quoteRows || quoteRows.length === 0) {

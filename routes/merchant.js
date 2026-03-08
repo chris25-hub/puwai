@@ -5,6 +5,13 @@ const db = require('../db');
 const { OpenAI } = require('openai');
 const { generateOrderNo } = require('../utils/tools'); // 1. 引入工具函数
 
+const BASE_URL = process.env.BASE_URL || process.env.API_BASE_URL || 'http://localhost:3000';
+function toFullUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    return BASE_URL.replace(/\/$/, '') + (url.startsWith('/') ? url : '/' + url);
+}
+
 
 
 const openai = new OpenAI({
@@ -91,27 +98,27 @@ router.post('/register', async (req, res) => {
     }
 });
 
+// 商家入驻提交资质：uid 为当前用户（手机号）。若 merchant 表尚无该 uid 则先插入再更新，审核通过后由 admin 将 user.role 升级为 merchant
 router.post('/submit-qualification', async (req, res) => {
     const { uid, merchant_name, service_tags, logo } = req.body;
 
-    try {
-        // merchant 表若无 update_time 字段则只更新以下字段
-        const sql = `
-            UPDATE merchant 
-            SET 
-                merchant_name = ?, 
-                service_tags = ?, 
-                logo = ?, 
-                status = 0
-            WHERE uid = ?`;
-        
-        const [result] = await db.query(sql, [merchant_name, service_tags, logo, uid]);
+    if (!uid) return res.status(400).json({ code: 400, msg: '缺少 uid' });
 
-        if (result && result.affectedRows > 0) {
-            res.json({ code: 200, msg: '提交成功，进入待审核状态' });
+    try {
+        const [exist] = await db.query('SELECT uid FROM merchant WHERE uid = ? LIMIT 1', [uid]);
+        if (!exist || exist.length === 0) {
+            await db.query(
+                'INSERT INTO merchant (uid, merchant_name, service_tags, logo, status, create_time) VALUES (?, ?, ?, ?, 0, NOW())',
+                [uid, merchant_name || '待完善', service_tags || null, logo || null]
+            );
         } else {
-            res.json({ code: 404, msg: '未找到该商家记录' });
+            const sql = `
+                UPDATE merchant 
+                SET merchant_name = ?, service_tags = ?, logo = ?, status = 0
+                WHERE uid = ?`;
+            await db.query(sql, [merchant_name || '', service_tags || null, logo || null, uid]);
         }
+        res.json({ code: 200, msg: '提交成功，进入待审核状态' });
     } catch (err) {
         console.error('更新资质错误:', err);
         res.status(500).json({ code: 500, error: '服务器内部错误' });
@@ -165,7 +172,23 @@ router.get('/hall-orders', async (req, res) => {
         const category = req.query.category ? parseInt(req.query.category, 10) : null;
         const order = (req.query.order === 'asc' || req.query.order === 'desc') ? req.query.order : 'desc';
 
-        let sql = `SELECT id, user_id, category, tags, create_time FROM demand WHERE status = 0`;
+        // 读取 demand 表并关联发单用户头像（user.avatar_url）；用 TRIM 避免 user_id/uid 前后空格导致 JOIN 不到
+        let sql = `
+            SELECT 
+                d.id,
+                d.user_id,
+                d.category,
+                d.category_name,
+                d.detail,
+                d.city,
+                d.budget,
+                d.tags,
+                d.create_time,
+                u.avatar_url
+            FROM demand d
+            LEFT JOIN user u ON TRIM(COALESCE(d.user_id, '')) = TRIM(COALESCE(u.uid, ''))
+            WHERE d.status = 0
+        `;
         const params = [];
         if (category >= 1 && category <= 6) {
             sql += ` AND category = ?`;
@@ -177,20 +200,40 @@ router.get('/hall-orders', async (req, res) => {
 
         const categoryMap = { 1: '留学', 2: '签证', 3: '移民', 4: '迪拜房产', 5: '日本房产', 6: '海外生活' };
 
-        const formattedData = rows.map(item => {
-            let tagsArray = [];
-            try {
-                tagsArray = typeof item.tags === 'string' ? JSON.parse(item.tags) : (item.tags || []);
-            } catch (e) { tagsArray = []; }
+        const formattedData = rows.map((item) => {
+            // 描述：优先使用 detail，其次使用 tags
+            let description = item.detail || '';
+            if (!description) {
+                let tagsArray = [];
+                try {
+                    tagsArray = typeof item.tags === 'string' ? JSON.parse(item.tags) : (item.tags || []);
+                } catch (e) {
+                    tagsArray = [];
+                }
+                if (Array.isArray(tagsArray) && tagsArray.length > 0) {
+                    description = tagsArray.join(' / ');
+                }
+            }
+            if (!description) description = '用户的需求描述';
+
+            // 预算：数据库里是分；有值则转成人民币整数，否则展示“详谈”
+            let displayBudget = '详谈';
+            if (item.budget && Number(item.budget) > 0) {
+                const yuan = Math.round(Number(item.budget) / 100);
+                displayBudget = String(yuan);
+            }
 
             return {
                 id: item.id,
                 user_id: item.user_id,
                 category: item.category,
                 type_name: categoryMap[item.category] || '海外生活',
-                budget: '详谈',
-                description: Array.isArray(tagsArray) ? tagsArray.join(' / ') : '暂无描述',
-                create_time: item.create_time
+                category_name: item.category_name || null,
+                description,
+                city: item.city || null,
+                budget: displayBudget,
+                create_time: item.create_time,
+                avatar: item.avatar_url ? toFullUrl(item.avatar_url) : null
             };
         });
         res.json({ code: 200, data: formattedData });
@@ -229,7 +272,7 @@ router.get('/my-orders', async (req, res) => {
 router.post('/update-order-status', async (req, res) => {
     const { order_no } = req.body;
     try {
-        // 逻辑：将 status 字段加 1
+        // 逻辑：status +1（0→1→2→3）；前端「已完成」仅当 current_step=4 时展示，status=2 由 update-step step=4 设置
         const sql = `UPDATE main_order SET status = status + 1 WHERE order_no = ? AND status < 4`;
         const [result] = await db.query(sql, [order_no]);
         
@@ -291,12 +334,13 @@ router.post('/send-message', async (req, res) => {
     }
 });
 
-// 获取聊天记录
+// 获取聊天记录（session_id 必须从 query 传入，前端 GET 请拼在 URL 上）
 router.get('/get-messages', async (req, res) => {
     const { session_id } = req.query;
+    if (!session_id) return res.status(400).json({ code: 400, error: '缺少 session_id' });
     try {
         const [rows] = await db.query(`SELECT * FROM messages WHERE session_id = ? ORDER BY create_time ASC`, [session_id]);
-        res.json({ code: 200, data: rows });
+        res.json({ code: 200, data: rows || [] });
     } catch (err) {
         res.status(500).json({ code: 500, error: err.message });
     }
@@ -314,32 +358,22 @@ router.get('/merchant-stats', async (req, res) => {
             [merchant_uid]
         );
         
-        // 获取最新余额
+        // 获取最新余额：统一从 user.balance 读取（与 merchant.balance 同步维护）
         const [walletRes] = await db.query(
-            `SELECT balance FROM merchant WHERE uid = ?`, 
+            `SELECT COALESCE(balance, 0) AS balance FROM user WHERE uid = ?`,
             [merchant_uid]
         );
 
         res.json({ 
             code: 200, 
             todayCount: orderRes[0].todayCount || 0,
-            balance: walletRes[0] ? (Number(walletRes[0].balance) / 100).toFixed(2) : '0.00'
+            balance: walletRes[0] ? (Math.max(0, Number(walletRes[0].balance)) / 100).toFixed(2) : '0.00'
         });
     } catch (err) {
         res.status(500).json({ code: 500, error: err.message });
     }
 });
 
-// 获取商家资金流水明细（merchant_wallet 表用 update_time 表示流水时间，接口里别名成 create_time 给前端用）
-router.get('/wallet-logs', async (req, res) => {
-    const { merchant_uid } = req.query;
-    const sql = `
-        SELECT w.*, w.change_amount / 100 as amount_display, w.create_time as create_time
-        FROM merchant_wallet w
-        JOIN merchant m ON w.merchant_id = m.uid
-        WHERE m.uid = ? ORDER BY w.create_time DESC`;
-    const [rows] = await db.query(sql, [merchant_uid]);
-    res.json({ code: 200, data: rows });
-});
+// 资金流水已迁移到统一钱包接口：GET /api/wallet/logs?uid=xxx
 
 module.exports = router;

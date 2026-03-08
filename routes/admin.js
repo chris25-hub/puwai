@@ -12,11 +12,15 @@ router.get('/pending-list', async (req, res) => {
     }
 });
 
-// 审核操作 (修改 status 为 1 或 2)
+// 审核操作 (status 1=通过 2=拒绝)。通过时将该用户的 user.role 升级为 merchant
 router.post('/audit-action', async (req, res) => {
     const { uid, status } = req.body;
+    if (!uid) return res.status(400).json({ code: 400, error: '缺少 uid' });
     try {
         await db.query('UPDATE merchant SET status = ? WHERE uid = ?', [status, uid]);
+        if (Number(status) === 1) {
+            await db.query('UPDATE user SET role = ? WHERE uid = ?', ['merchant', uid]);
+        }
         res.json({ code: 200, msg: '审核操作成功' });
     } catch (err) {
         res.status(500).json({ code: 500, error: err.message });

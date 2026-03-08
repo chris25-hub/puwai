@@ -1,12 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { OpenAI } = require('openai'); // 重新引入你习惯使用的 OpenAI 库
-
-const openai = new OpenAI({
-    apiKey: (process.env.DEEPSEEK_API_KEY || 'sk-41ea61f5f0c64c9fa277dda6f85c38bd').trim(),
-    baseURL: 'https://api.deepseek.com'
-});
+const { generateFromDemandContent } = require('../utils/aiRecommendation');
+const { generateOrderNo } = require('../utils/tools');
 
 // 1. 板块映射表：将前端传递的分类名转为数据库数字 ID
 const categoryMap = {
@@ -18,14 +14,14 @@ const categoryMap = {
     'life': 6
 };
 
-// 【新增】各板块专业提示词配置
-const promptContexts = {
-    'study': '你是一个资深的留学专家，请重点分析申请人的背景、选校梯度和文书重点。',
-    'migration': '你是一个专业的移民律师，请重点分析申请人的背景是否符合移民政策、资金来源解释难度及项目风险。',
-    'estate_dubai': '你是一个迪拜房产投资顾问，请分析该区域的租金回报率(ROI)、周边配套及黄金签证办理条件。',
-    'estate_japan': '你是一个日本房产投资顾问，请分析该地段的增值潜力、管理费税费成本及经营管理签证要求。',
-    'visa': '你是一个签证专家，请评估材料完整度、出签率及面签核心注意事项。',
-    'life': '你是一个海外生活服务管家，请评估用户需求的可行性并给出落地建议。'
+// category 数字 ID -> 中文名称（写入 demand.category_name）
+const categoryIdToName = {
+    1: '留学',
+    2: '签证',
+    3: '移民',
+    4: '迪拜房产',
+    5: '日本房产',
+    6: '海外生活'
 };
 
 // 智能体逐步发题：按 step 返回当前题（用于对话式问卷）
@@ -89,51 +85,47 @@ router.get('/questions', async (req, res) => {
 
 // routes/survey.js
 
-// 2. 提交问卷接口：恢复 DeepSeek 实时诊断逻辑
-// 2. 提交问卷接口：升级 AI 诊断逻辑
+// 问卷提交：先写入 demand（detail = 问卷答案整合），再按 demand 内容统一生成 AI 建议（与智能体发单同源）
 router.post('/submit', async (req, res) => {
-    const { category, answers } = req.body || {};
+    const { category, answers, user_id } = req.body || {};
     if (!category || !Array.isArray(answers)) {
         return res.status(400).json({ code: 400, error: '缺少 category 或 answers' });
     }
     const categoryId = categoryMap[category] || 1;
-    const answersStr = answers.length ? answers.join(', ') : '未填写';
+    const detail = answers.length ? answers.join('；') : '未填写';
+    const category_name = categoryIdToName[categoryId] || '海外生活';
+    const userUid = (user_id != null && String(user_id).trim() !== '') ? String(user_id).trim() : null;
+    if (!userUid) return res.status(400).json({ code: 400, error: '缺少 user_id' });
 
     try {
-        const businessPrompt = promptContexts[category] || "你是一个专业的海外诊断助手。";
-
-        const completion = await openai.chat.completions.create({
-            model: "deepseek-chat",
-            messages: [
-                {
-                    role: "system",
-                    content: `${businessPrompt} 请根据用户的需求标签，输出包含 recommendation, reason, risk 三个字段的 JSON 对象。要求：recommendation、reason、risk 三个字段的正文内容必须全部使用中文撰写，面向中国客户。注意：严禁输出任何非 JSON 文字。`
-                },
-                {
-                    role: "user",
-                    content: `用户当前板块：${category}，需求标签：${answersStr}`
-                }
-            ],
-            response_format: { type: 'json_object' }
-        });
-
-        const aiContent = JSON.parse(completion.choices[0].message.content);
-        
+        // 1) 先插入 demand，以「需求描述」形式写入问卷答案（detail），不写 ai_recommendation
+        const demandNo = await generateOrderNo('DM', 'demand');
         const sql = `
-            INSERT INTO \`demand\` (user_id, category, tags, ai_recommendation, status, create_time) 
-            VALUES (1, ?, ?, ?, 0, NOW())
+            INSERT INTO \`demand\` (demand_no, user_id, category, category_name, detail, tags, status, create_time)
+            VALUES (?, ?, ?, ?, ?, ?, 0, NOW())
         `;
-        
         const [result] = await db.query(sql, [
-            categoryId,             
-            JSON.stringify(answers), 
-            JSON.stringify(aiContent) 
+            demandNo,
+            userUid,
+            categoryId,
+            category_name,
+            detail,
+            JSON.stringify(answers)
         ]);
-        
-        res.json({ code: 200, demand_id: result.insertId });
+        const demandId = result.insertId;
 
+        // 2) 根据 demand 整合后的内容（detail + category）统一生成 AI 建议
+        const aiContent = await generateFromDemandContent(detail, categoryId);
+        if (aiContent) {
+            await db.query('UPDATE demand SET ai_recommendation = ? WHERE id = ?', [
+                JSON.stringify(aiContent),
+                demandId
+            ]);
+        }
+
+        res.json({ code: 200, demand_id: demandId });
     } catch (err) {
-        console.error("[survey/submit]", err.message);
+        console.error('[survey/submit]', err.message);
         const msg = (err.status === 401) ? 'DeepSeek API Key 无效或已过期，请更换' : (err.message || '诊断生成失败，请稍后再试');
         res.status(500).json({ code: 500, error: msg });
     }
