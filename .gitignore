@@ -1,1 +1,4 @@
 node_modules/
+.env
+# 微信支付商户私钥等，勿提交
+certs/

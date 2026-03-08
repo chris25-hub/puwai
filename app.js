@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const bodyParser = require('body-parser');
@@ -24,14 +25,15 @@ const selfOperatedRouter = require('./routes/selfOperated');
 const authRouter = require('./routes/auth');
 const agentChatRouter = require('./routes/agentChat');
 const quoteRouter = require('./routes/quote');
+const payRouter = require('./routes/pay');
 
 const app = express();
 // 云托管/容器会注入 PORT，本地默认 3000
 const port = process.env.PORT || 3000;
 
-// 2. 基础配置中间件
-app.use(cors()); 
-app.use(bodyParser.json());
+// 2. 基础配置中间件（保留原始 body 供微信支付回调验签）
+app.use(cors());
+app.use(bodyParser.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // 3. 静态资源托管
@@ -59,6 +61,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/agent', agentRouter);
 app.use('/api/agent-chat', agentChatRouter);
 app.use('/api/quote', quoteRouter);
+app.use('/api/pay', payRouter);
 
 // 可选：把每次请求打到运行日志，便于排查
 app.use((req, res, next) => {
