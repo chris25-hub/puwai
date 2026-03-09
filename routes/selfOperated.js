@@ -7,7 +7,7 @@ const BASE_URL = process.env.BASE_URL || process.env.API_BASE_URL || 'http://loc
 
 function toFullUrl(imgUrl) {
   if (!imgUrl || typeof imgUrl !== 'string') return '';
-  if (imgUrl.startsWith('http://') || imgUrl.startsWith('https://')) return imgUrl;
+  if (imgUrl.startsWith('http://') || imgUrl.startsWith('https://') || imgUrl.startsWith('cloud://')) return imgUrl;
   const path = imgUrl.startsWith('/') ? imgUrl : '/' + imgUrl;
   return BASE_URL.replace(/\/$/, '') + path;
 }
