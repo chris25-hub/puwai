@@ -147,4 +147,43 @@ router.post('/banner/delete', async (req, res) => {
     }
 });
 
+// ===================== 智能体头像管理 =====================
+router.get('/agent-avatars', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT agent_type, avatar_url FROM agent_avatar');
+        res.json({ code: 200, data: rows });
+    } catch (err) {
+        if (err.message && err.message.includes("doesn't exist")) {
+            res.json({ code: 200, data: [] });
+        } else {
+            res.status(500).json({ code: 500, error: err.message });
+        }
+    }
+});
+
+router.post('/agent-avatar/save', async (req, res) => {
+    const { agent_type, avatar_url } = req.body;
+    if (!agent_type) return res.status(400).json({ code: 400, error: '缺少智能体类型' });
+    try {
+        // 先确保表存在
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS \`agent_avatar\` (
+              \`id\` int unsigned NOT NULL AUTO_INCREMENT,
+              \`agent_type\` varchar(32) NOT NULL,
+              \`avatar_url\` text DEFAULT NULL,
+              \`update_time\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (\`id\`),
+              UNIQUE KEY \`uk_type\` (\`agent_type\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='智能体头像配置';
+        `);
+        await db.query(
+            'INSERT INTO agent_avatar (agent_type, avatar_url) VALUES (?, ?) ON DUPLICATE KEY UPDATE avatar_url = ?',
+            [agent_type, avatar_url ? avatar_url.trim() : '', avatar_url ? avatar_url.trim() : '']
+        );
+        res.json({ code: 200, msg: '保存成功' });
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
 module.exports = router;
