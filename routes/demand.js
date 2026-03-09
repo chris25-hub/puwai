@@ -74,7 +74,9 @@ async function inferCategoryNameWithSub(agentType, detail, majorName) {
     const { OpenAI } = require('openai');
     const openai = new OpenAI({
         apiKey: (process.env.DEEPSEEK_API_KEY || '').trim(),
-        baseURL: 'https://api.deepseek.com'
+        baseURL: 'https://api.deepseek.com',
+        timeout: 5000, // 增加 5 秒超时，防止 DeepSeek 响应慢导致云托管 102002 错误
+        maxRetries: 1
     });
     try {
         const completion = await openai.chat.completions.create({
@@ -115,19 +117,7 @@ router.post('/create-from-agent', async (req, res) => {
     const tags = extracted.tags;
 
     if (!detail || detail === '未说明') detail = '用户通过智能体发单，具体需求见对话记录。';
-    // 智能体判断小分类，广场展示为「留学-研究生申请」等
-    try {
-        category_name = await inferCategoryNameWithSub(agent_type, detail, category_name);
-    } catch (e) {}
-    // 城市：优先用前端传的 city；否则若传了经纬度则逆地理
-    if (!city && latitude != null && longitude != null) {
-        try {
-            const geoCity = await reverseGeocode(latitude, longitude);
-            if (geoCity) city = geoCity;
-        } catch (e) {
-            console.error('[demand] reverseGeocode error:', e.message);
-        }
-    }
+
     let cents = null;
     if (budget != null && budget !== '' && budget !== '未说明') {
         const num = parseFloat(budget);
@@ -145,15 +135,16 @@ router.post('/create-from-agent', async (req, res) => {
             demandNo,
             String(user_id).trim(),
             category,
-            category_name,
+            category_name, // 初始默认的大类名
             detail,
-            city || null,
+            city || null, // 初始传入的 city 或 null
             cents,
             tagsStr
         ];
         const [result] = await db.query(sql, params);
         const demandId = result.insertId;
-        // 发单后根据 demand 整合的需求内容生成 AI 建议（与问卷统一：均以 demand 为数据源）
+
+        // 发单后根据 demand 整合的需求内容生成 AI 建议（同步执行，保证前端时序：发单 -> ai分析报告 -> 自营卡片）
         try {
             const aiContent = await generateFromDemandContent(detail, category);
             if (aiContent) {
@@ -165,7 +156,47 @@ router.post('/create-from-agent', async (req, res) => {
         } catch (aiErr) {
             console.error('[demand] create-from-agent AI recommendation error:', aiErr.message);
         }
+
+        // 快速响应前端，避免 102002 超时（仅地理位置和分类推断走异步）
         res.json({ code: 200, demand_id: demandId });
+
+        // 以下耗时操作放入后台异步执行
+        (async () => {
+            try {
+                let finalCategoryName = category_name;
+                let finalCity = city;
+
+                // 1. 异步：逆地理位置解析
+                if (!finalCity && latitude != null && longitude != null) {
+                    try {
+                        const geoCity = await reverseGeocode(latitude, longitude);
+                        if (geoCity) finalCity = geoCity;
+                    } catch (e) {
+                        console.error('[demand async] reverseGeocode error:', e.message);
+                    }
+                }
+
+                // 2. 异步：智能体判断小分类
+                try {
+                    finalCategoryName = await inferCategoryNameWithSub(agent_type, detail, category_name);
+                } catch (e) {
+                    console.error('[demand async] inferCategory error:', e.message);
+                }
+
+                // 如果分类名称或城市有更新，则更新到数据库
+                if (finalCategoryName !== category_name || finalCity !== city) {
+                    await db.query('UPDATE demand SET category_name = ?, city = ? WHERE id = ?', [
+                        finalCategoryName,
+                        finalCity || null,
+                        demandId
+                    ]);
+                }
+
+            } catch (asyncErr) {
+                console.error('[demand async] background task error:', asyncErr.message);
+            }
+        })();
+
     } catch (err) {
         console.error('[demand] create-from-agent error:', err.message);
         res.status(500).json({ code: 500, error: err.message });
