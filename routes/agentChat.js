@@ -104,10 +104,14 @@ router.get('/messages', async (req, res) => {
     if (!session_id) return res.status(400).json({ code: 400, error: '缺少 session_id' });
     try {
         const [rows] = await db.query(
-            'SELECT id, session_id, role, content, msg_type, extra, create_time FROM agent_chat_message WHERE session_id = ? ORDER BY create_time ASC',
-            [session_id]
+            `SELECT id, session_id, role, content, msg_type, extra, create_time 
+             FROM agent_chat_message 
+             WHERE session_id = ? 
+               AND create_time >= COALESCE((SELECT MAX(create_time) FROM agent_chat_message WHERE session_id = ? AND msg_type = 'clear_history'), '1970-01-01')
+             ORDER BY create_time ASC`,
+            [session_id, session_id]
         );
-        const list = (rows || []).map((r) => {
+        const list = (rows || []).filter(r => r.msg_type !== 'clear_history').map((r) => {
             if (r.msg_type === 'recommendation_card' && r.extra != null) {
                 try {
                     const ex = typeof r.extra === 'string' ? JSON.parse(r.extra) : r.extra;
@@ -201,6 +205,36 @@ router.post('/mark-read', async (req, res) => {
         res.json({ code: 200 });
     } catch (err) {
         console.error('[agent-chat] POST /mark-read error:', err.message);
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+// 清空当前智能体的聊天记录（通过插入一个断点标记，使查询接口忽略此前的所有消息，并附带一条新的开场白）
+router.post('/clear', async (req, res) => {
+    const { session_id, agent_type } = req.body || {};
+    if (!session_id || !agent_type) return res.status(400).json({ code: 400, error: '缺少 session_id 或 agent_type' });
+    try {
+        // 1. 插入清空断点
+        await db.query(
+            'INSERT INTO agent_chat_message (session_id, role, content, msg_type) VALUES (?, ?, ?, ?)',
+            [session_id, 'system', 'clear', 'clear_history']
+        );
+        // 2. 写入新的默认开场白
+        const greet = ENTRY_GREETINGS[agent_type];
+        if (greet) {
+            // 注意：这里需要稍微延迟一点点时间或者直接插入，因为获取时是以 create_time 为条件的。
+            // 由于上面是一个 query，接下来这个也是一个 query，如果同一秒执行的话可能会有问题。
+            // 在 MySQL 5.6+ 中 datetime 默认精度是秒，如果两行在同一秒插入，create_time 会相同。
+            // 但我们的查询条件是 >= (MAX clear_history)，所以只要 create_time >= clear_history 的 create_time，
+            // 这条开场白就能被查出来，所以同一秒也没有关系，它会被保留。
+            await db.query(
+                'INSERT INTO agent_chat_message (session_id, role, content, msg_type) VALUES (?, ?, ?, NULL)',
+                [session_id, 'assistant', greet]
+            );
+        }
+        res.json({ code: 200 });
+    } catch (err) {
+        console.error('[agent-chat] POST /clear error:', err.message);
         res.status(500).json({ code: 500, error: err.message });
     }
 });
