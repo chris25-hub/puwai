@@ -16,6 +16,23 @@ const ENTRY_GREETINGS = {
     self_operated: '你好，我是龙宫自营智能体，可以优先为你推荐平台自营的签证、留学、移民等服务方案，并帮助你对比第三方商家报价。'
 };
 
+// 获取所有智能体头像（供前端动态覆盖本地图标）
+router.get('/avatars', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT agent_type, avatar_url FROM agent_avatar');
+        const data = {};
+        for (const r of rows) {
+            if (r.avatar_url) {
+                data[r.agent_type] = r.avatar_url;
+            }
+        }
+        res.json({ code: 200, data });
+    } catch (err) {
+        // 如果表不存在，忽略并返回空
+        res.json({ code: 200, data: {} });
+    }
+});
+
 // 获取当前用户的智能体会话列表（供首页对话列表展示，与商家会话合并）
 router.get('/sessions', async (req, res) => {
     const { user_id } = req.query;
