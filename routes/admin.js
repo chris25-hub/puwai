@@ -71,7 +71,7 @@ router.get('/finance', async (req, res) => {
     }
 });
 
-// 管理端商品管理接口
+// ===================== 自营商品与轮播管理 =====================
 router.get('/products', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT id, category, label, price, img_url, sort_order, status FROM self_product ORDER BY category ASC, sort_order ASC');
@@ -98,16 +98,50 @@ router.post('/product/save', async (req, res) => {
         if (id) {
             await db.query(
                 'UPDATE self_product SET category=?, label=?, price=?, img_url=?, sort_order=?, status=? WHERE id=?',
-                [category, label, price || 0, img_url || '', sort_order || 0, status ?? 1, id]
+                [category, label, price || 0, img_url ? img_url.trim() : '', sort_order || 0, status ?? 1, id]
             );
             res.json({ code: 200, msg: '更新成功' });
         } else {
             await db.query(
                 'INSERT INTO self_product (category, label, price, img_url, sort_order, status) VALUES (?, ?, ?, ?, ?, ?)',
-                [category, label, price || 0, img_url || '', sort_order || 0, status ?? 1]
+                [category, label, price || 0, img_url ? img_url.trim() : '', sort_order || 0, status ?? 1]
             );
             res.json({ code: 200, msg: '新增成功' });
         }
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+// 轮播图管理
+router.get('/banners', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT id, img_url, sort_order FROM self_banner ORDER BY sort_order ASC');
+        res.json({ code: 200, data: rows });
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+router.post('/banner/save', async (req, res) => {
+    const { id, img_url, sort_order } = req.body;
+    try {
+        if (id) {
+            await db.query('UPDATE self_banner SET img_url=?, sort_order=? WHERE id=?', [img_url ? img_url.trim() : '', sort_order || 0, id]);
+        } else {
+            await db.query('INSERT INTO self_banner (img_url, sort_order) VALUES (?, ?)', [img_url ? img_url.trim() : '', sort_order || 0]);
+        }
+        res.json({ code: 200, msg: '保存成功' });
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+router.post('/banner/delete', async (req, res) => {
+    const { id } = req.body;
+    try {
+        await db.query('DELETE FROM self_banner WHERE id=?', [id]);
+        res.json({ code: 200, msg: '删除成功' });
     } catch (err) {
         res.status(500).json({ code: 500, error: err.message });
     }
