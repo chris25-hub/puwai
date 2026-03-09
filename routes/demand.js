@@ -170,7 +170,12 @@ router.post('/create-from-agent', async (req, res) => {
                 if (!finalCity && latitude != null && longitude != null) {
                     try {
                         const geoCity = await reverseGeocode(latitude, longitude);
-                        if (geoCity) finalCity = geoCity;
+                        if (geoCity) {
+                            finalCity = geoCity;
+                            console.log(`[demand async] 成功解析地理位置: demandId=${demandId}, city=${geoCity}`);
+                        } else {
+                            console.log(`[demand async] 地理位置解析为空: demandId=${demandId}`);
+                        }
                     } catch (e) {
                         console.error('[demand async] reverseGeocode error:', e.message);
                     }
@@ -179,6 +184,9 @@ router.post('/create-from-agent', async (req, res) => {
                 // 2. 异步：智能体判断小分类
                 try {
                     finalCategoryName = await inferCategoryNameWithSub(agent_type, detail, category_name);
+                    if (finalCategoryName !== category_name) {
+                        console.log(`[demand async] 成功推断分类: demandId=${demandId}, category=${finalCategoryName}`);
+                    }
                 } catch (e) {
                     console.error('[demand async] inferCategory error:', e.message);
                 }
@@ -190,6 +198,7 @@ router.post('/create-from-agent', async (req, res) => {
                         finalCity || null,
                         demandId
                     ]);
+                    console.log(`[demand async] 已将新分类/城市更新至数据库: demandId=${demandId}`);
                 }
 
             } catch (asyncErr) {
@@ -200,6 +209,20 @@ router.post('/create-from-agent', async (req, res) => {
     } catch (err) {
         console.error('[demand] create-from-agent error:', err.message);
         res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+// 从前端获取经纬度逆地理位置
+router.post('/reverse-geocode', async (req, res) => {
+    const { latitude, longitude } = req.body || {};
+    if (latitude == null || longitude == null) {
+        return res.status(400).json({ code: 400, error: '缺少 latitude 或 longitude' });
+    }
+    try {
+        const city = await reverseGeocode(latitude, longitude);
+        res.json({ code: 200, city: city || null });
+    } catch (e) {
+        res.status(500).json({ code: 500, error: '解析失败' });
     }
 });
 
