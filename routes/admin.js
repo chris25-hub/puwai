@@ -71,4 +71,46 @@ router.get('/finance', async (req, res) => {
     }
 });
 
+// 管理端商品管理接口
+router.get('/products', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT id, category, label, price, img_url, sort_order, status FROM self_product ORDER BY category ASC, sort_order ASC');
+        res.json({ code: 200, data: rows });
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+router.post('/product/toggle-status', async (req, res) => {
+    const { id, status } = req.body;
+    if (!id || status === undefined) return res.status(400).json({ code: 400, error: '参数缺失' });
+    try {
+        await db.query('UPDATE self_product SET status = ? WHERE id = ?', [status, id]);
+        res.json({ code: 200, msg: '状态已更新' });
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
+router.post('/product/save', async (req, res) => {
+    const { id, category, label, price, img_url, sort_order, status } = req.body;
+    try {
+        if (id) {
+            await db.query(
+                'UPDATE self_product SET category=?, label=?, price=?, img_url=?, sort_order=?, status=? WHERE id=?',
+                [category, label, price || 0, img_url || '', sort_order || 0, status ?? 1, id]
+            );
+            res.json({ code: 200, msg: '更新成功' });
+        } else {
+            await db.query(
+                'INSERT INTO self_product (category, label, price, img_url, sort_order, status) VALUES (?, ?, ?, ?, ?, ?)',
+                [category, label, price || 0, img_url || '', sort_order || 0, status ?? 1]
+            );
+            res.json({ code: 200, msg: '新增成功' });
+        }
+    } catch (err) {
+        res.status(500).json({ code: 500, error: err.message });
+    }
+});
+
 module.exports = router;
